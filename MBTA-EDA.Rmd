@@ -1,0 +1,413 @@
+---
+title: "615 Final Project--MBTA EDA"
+author: "Yaquan Yang"
+date: "2022-12-12"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+```{r message=F,warning=F,echo=FALSE}
+library(data.table)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(flextable)
+library(dplyr)
+library(scales)
+options(width=90)
+```
+
+# Subway data
+
+
+This analysis uses data from November 2021 to October 2022 for the Red line, Blue line and Green-B line to analyze.
+
+Red Line: From Alewife in the northwest to Braintree in the southeast.
+Blue Line: From Wonderland to Bowdoin via Airport and Downtown.
+Green-B: From Government Center to Boston College, passes through Boston University and Fenway Park. 
+
+These three subway lines contain several important transportation hubs in the Boston area that we believe are worth analyzing.
+
+```{r}
+data.files<-list.files('MetroData',pattern='csv$',full=T)
+data.files
+
+dat<-lapply(setNames(,data.files),function(x)
+{
+   fread(x)->inter
+   inter[,fromFile:=x]
+   inter[,day:=mday(service_date)]
+   inter<-inter[day %in% 1:7]
+   inter<-inter[route_id %in% c('Red','Blue','Green-B')]
+})
+
+
+rbindlist(dat)->dat
+dat[,startTime:=as.ITime(service_date)+start_time_sec]
+dat[,endTime:=as.ITime(service_date)+end_time_sec]
+
+
+fread('stops.txt')->sites
+setNames(sites[,stop_name],sites[,stop_id])->sites.name
+
+dat[,from_stop_name:=sites.name[as.character(from_stop_id)]]
+dat[,to_stop_name:=sites.name[as.character(to_stop_id)]]
+
+#fwrite(dat,file='LR.csv',sep=",")
+#save(dat,sites,sites.name,file='LR.RData')
+```
+
+# Subway EDA 
+
+## Total number of inbound and outbound trains for different lines (Red,Blue,Green-B) during the year
+
+```{r}
+pie.data<-dat[,.N,route_id]
+pie.data[,percent:=percent(N/sum(N),0.01)]
+pie.data[,label:=paste0(route_id," (",comma(N),"; ",percent,")")]
+
+
+pie(pie.data$N,
+    pie.data$label,
+    col=c('darkolivegreen','olivedrab3','khaki'), main= "Total number of inbound and outbound trains")
+```
+
+From the above graph we can see that the traffic flow on the red and green-B lines is much higher than the blue line, which means that the red and green-B lines are busier than the blue line most of the time.
+
+
+## Total number of inbound and outbound trains at different stations
+
+```{r}
+fromVolume<-dat[,.N,from_stop_id][order(-N)]
+names(fromVolume)<-c('stop_id','from_count')
+toVolume<-dat[,.N,to_stop_id][order(-N)]
+names(toVolume)<-c('stop_id','to_count')
+siteVolume<-fromVolume[toVolume,on=.(stop_id)]
+siteVolume[,stop_name:=sites.name[as.character(stop_id)]]
+siteVolume[,total_count:=from_count+to_count]
+siteVolume<-siteVolume[order(-total_count)]
+siteVolume<-siteVolume[,.(stop_id,stop_name,from_count,to_count,total_count)]
+
+
+siteVolume %>%
+head(15) %>%
+    flextable() %>% 
+    width(j=2,width=2) %>%
+    theme_vanilla() %>%
+	set_caption('Top 15 of the heaviest traffic STOPs according total count')
+
+site.plot.data<-siteVolume %>% head(15)
+site.plot.data[,stop_name:=ordered(stop_name)]
+site.plot.data<-site.plot.data[,.(stop_name,from_count,to_count)]
+site.plot.data<-melt(site.plot.data,id.var='stop_name')
+
+
+ggplot(site.plot.data,aes(x=stop_name,y=value,fill=gsub('_count','',variable)))+
+geom_bar(stat='identity')+
+theme_bw()+
+guides(x=guide_axis(angle=60))+
+labs(x='Stop Name',
+     y='Total Count',fill='',title = "Top 15 of the heaviest traffic STOPs according total count")
+
+```
+
+We can see that the busiest stops are "Alewife", "South Station" and "Downtown Crossing"
+
+## 
+
+```{r}
+# tra<-dat[,.(Traffic=.N),.(from_stop_id,to_stop_id)]
+# tra[,from_stop_id:=as.character(from_stop_id)]
+# tra[,to_stop_id:=as.character(to_stop_id)]
+# 
+# 
+# to.anno<-sites[,.(to_stop_id=stop_id,to_stop_lat=stop_lat, to_stop_lon=stop_lon,to_stop_name=stop_name)]
+# tra<-to.anno[tra,on=.(to_stop_id)]
+# from.anno<-sites[,.(from_stop_id=stop_id,from_stop_lat=stop_lat,  from_stop_lon=stop_lon,from_stop_name=stop_name)]
+# tra<-from.anno[tra,on=.(from_stop_id)]
+# tra<-tra[order(-Traffic)]
+# 
+# 
+# tra[,.(from_stop_name,to_stop_name,Traffic)] %>% 
+#     head(15) %>%
+#     flextable() %>% 
+#     width(j=1:2,width=2) %>%
+#     theme_vanilla() %>%
+# 	set_caption('Top 15 of the heaviest traffic between two subway stations')
+# 
+# 
+# ggplot(tra,aes(x=from_stop_lon,xend=to_stop_lon,y=from_stop_lat,yend=to_stop_lat,colour=Traffic))+
+#    geom_segment()+
+#    geom_point(colour='black')+
+#    scale_colour_gradientn(colours=c(rev(brewer.pal(5,'YlGn')),brewer.pal(5,'YlOrRd')))+
+#    coord_sf()+
+#    theme_minimal()+
+#    labs(x='Longitude',y='Latitude',
+#         title='Distribution of stops and the traffic flow between them')
+```
+
+
+
+## Distribution of subway traffic and time
+
+### Distribution of subway traffic within 24-hours
+
+```{r}
+dat[,startHour:=hour(startTime)]
+hour.data<-dat[,.(count=.N),startHour][order(startHour)]
+hour.data<-hour.data[data.table(startHour=0:23),on=.(startHour)]
+
+flextable(hour.data) %>% 
+    width(j=2,width=2) %>%
+    theme_vanilla() %>%
+	set_caption('Distribution of subway traffic within 24-hours')
+
+
+ggplot(hour.data,aes(x=startHour,y=count))+
+    geom_bar(stat='identity',fill='orange')+
+    theme_minimal()+
+    scale_x_continuous(breaks=0:23)+
+    theme(panel.grid.minor=element_blank())+
+    labs(x='Start Hour',
+     y='Total Count',fill='',title = "Distribution of subway traffic within 24-hours")
+```
+
+The morning peak of the subway is at 7:00-9:00 a.m., the evening peak is at 4:00-7:00 p.m., and almost all trains stop running from 1:00 a.m. to 4:00 a.m.
+
+### Weekday
+
+```{r}
+weekdays.name<-strsplit('Sun,Mon,Tue,Wed,Thu,Fri,Sat',',')[[1]]
+
+dat[,weekday:=wday(service_date)]
+dat[,weekDay:=weekdays.name[as.integer(weekday)]]
+dat[,weekDay:=ordered(weekDay,weekdays.name)]
+
+week.data<-dat[,.(count=.N),weekDay][order(weekDay)]
+
+flextable(week.data) %>% 
+    width(j=2,width=2) %>%
+    theme_vanilla() %>%
+	set_caption('Distribution of subway traffic in 7 weekdays')
+
+
+ggplot(week.data,aes(y=count,x=weekDay))+
+  geom_bar(stat='identity',fill='darkseagreen3',width=0.6)+
+  theme_minimal()+
+    labs(x='Weekday',
+     y='Total Count',fill='',title = "Distribution of subway traffic in 7 weekdays")
+```
+
+
+## Month
+
+```{r}
+dat[,Month:=month(service_date)]
+dat[,MonthName:=month.abb[Month]]
+dat[,MonthName:=ordered(MonthName,month.abb)]
+
+month.data<-dat[,.(count=.N),MonthName][order(MonthName)]
+
+flextable(month.data) %>% 
+    width(j=2,width=2) %>%
+    theme_vanilla() %>%
+	set_caption('Distribution of subway traffic in different month')
+
+
+ggplot(month.data,aes(y=count,x=MonthName))+
+  geom_bar(stat='identity',fill='darkseagreen3',width=0.6)+
+  theme_minimal()+
+  labs(x='Month',
+     y='Total Count',fill='',title = "Distribution of subway traffic in different month")
+```
+
+
+## Distribution of travel_time
+
+```{r}
+ggplot(dat,aes(travel_time_sec/60))+
+geom_histogram(bins=30,fill='pink1',colour='pink4')+
+theme_bw()+
+    labs(x='Travel time(min)',
+     y='Total Count',fill='',title = "Distribution of travel time")
+```
+
+From the above chart, we can see that most of the travel_time are located within 50 minutes, let's look at the distribution of travel_time < 50 mins:
+
+```{r}
+ggplot(dat[travel_time_sec<=3000],aes(travel_time_sec/60))+
+geom_histogram(bins=30,fill='pink1',colour='pink4')+
+theme_bw()+
+        labs(x='Travel time(min)',
+     y='Total Count',fill='',title = "Distribution of travel time (<50 mins)")
+```
+
+Distribution of travel_time for 7 days in a week:
+
+```{r fig.height=7.8,message=F,warning=F}
+library(ggridges)
+
+ggplot(dat[travel_time_sec<=3000],aes(x=travel_time_sec/60,y=weekDay,fill=weekDay))+
+   geom_density_ridges(alpha=0.7)+
+   theme_bw()+
+    labs(x='Travel time(min)',
+     y='Weekday',fill='',title = "Distribution of travel time for 7 days in a week")
+
+```
+
+The results show that the distribution is similar.
+
+
+# Bus Data
+
+We choose three routes: No.8, No.56 and No.71 for analysis
+
+```{r}
+bus.data.files<-list.files('BusData',pattern='csv$',full=T)
+
+bus<-lapply(setNames(,bus.data.files),function(x)
+{
+fread(x)->inter
+})
+
+bus<-rbindlist(bus)
+bus<-bus[route_id %in% c('08','57','71')]
+bus<-bus[!point_type %in% c('Pullout','Pullback')]
+
+bus[,day:=mday(service_date)]
+bus<-bus[day %in% 1:7]
+
+bus<-bus[,.(service_date,route_id,stop_id,point_type,scheduled,actual,day)]
+bus<-na.omit(bus)
+
+bus[,timeDiff:=as.numeric(actual-scheduled)]
+bus[,sum(abs(timeDiff)<=1800)/.N] 
+
+bus<-bus[abs(timeDiff)<=1800]
+
+fread('stops.txt')->sites
+setNames(sites[,stop_name],sites[,stop_id])->sites.name
+
+bus[,stop_name:=sites.name[as.character(stop_id)]]
+
+weekdays.name<-strsplit('Sun,Mon,Tue,Wed,Thu,Fri,Sat',',')[[1]]
+bus[,weekday:=wday(service_date)]
+bus[,weekDay:=weekdays.name[as.integer(weekday)]]
+bus[,weekDay:=ordered(weekDay,weekdays.name)]
+
+
+#save(bus,file='bus.RData')
+#fwrite(bus,file='bus.csv',sep=",")
+```
+
+# Bus EDA
+
+```{r message=F,warning=F}
+library(data.table)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(flextable)
+library(dplyr)
+library(scales)
+library(ggridges)
+
+bus[,scheduledHour:=as.character(hour(scheduled))]
+bus[,scheduledHour:=ordered(scheduledHour,0:23)]
+bus[,type:=fcase(timeDiff==0,'Intime',timeDiff>0,'Delay',timeDiff<0,'Advance')]
+
+head(bus)
+```
+
+
+## The distribution of Delay/Intime/Advance in the three routes
+
+
+```{r fig.width=4.2}
+plot1.data<-bus[,.(count=.N),.(type,route_id)]
+
+ggplot(plot1.data,aes(x=route_id,y=count,fill=type))+
+geom_bar(stat='identity',width=0.6)+
+theme_bw()+
+    labs(x='Route id',
+     y='Total Count',fill='',title = "Bus arrival status")
+```
+
+## The distribution of Delay/Intime/Advance within 24 hours
+
+```{r fig.width=9.3}
+plot2.data<-bus[,.(count=.N),.(type,scheduledHour)]
+
+ggplot(plot2.data,aes(x=scheduledHour,y=count,fill=type))+
+geom_bar(stat='identity')+
+theme_bw()+
+    labs(x='Schedule Hour',
+     y='Total Count',fill='',title = "Bus arrival status within 24 hours")
+```
+
+## Top 15 sites with the most delays
+
+```{r}
+bus[type=='Delay',.(sumDelayTime=sum(timeDiff)),.(stop_name)][order(-sumDelayTime)] %>% 
+head(15) %>%
+    flextable() %>% 
+    width(j=1,width=4) %>%
+    theme_vanilla() %>%
+    set_caption('Top 15 sites with the most delays')
+```
+
+The stations with the most severe delays are "Tremont St @ Washington St", "Kenmore" and "Watertown Yard".
+
+## Distribution of dalay time
+
+```{r}
+ggplot(bus,aes(y=point_type,x=timeDiff/60,fill=point_type))+
+  geom_density_ridges(alpha=0.5)+
+  labs(x='Actual-Scheduled(min)',
+     y='Point type',fill='',title = "Distribution of dalay time")
+```
+
+From the above chart can see the Startpoint punctuality is high, the Midpoint has a high probability of delay, but the Endpoint, some instead arrived in time or even early.
+And most of the bus are delayed within 10 minutes.
+
+```{r}
+ggplot(bus,aes(y=route_id,x=timeDiff/60,fill=route_id))+
+  geom_density_ridges(alpha=0.5)+
+  labs(x='Actual-Scheduled(min)',
+     y='Route id',fill='',title = "Distribution of dalay time for different routes")
+```
+
+As you can see from the chart above, route 71 is more punctual and 08 and 57 are more delayed.
+
+## Distribution of dalay time for 7 days in a week
+
+```{r}
+ggplot(bus,aes(x=weekDay,y=timeDiff/60,colour=weekDay,fill = after_scale(alpha(colour, 0.4))))+
+   geom_boxplot()+
+   theme_bw()+
+   scale_colour_hue()+
+  labs(x='Actual-Scheduled(min)',
+     y='WeekDay',fill='',title = "Distribution of dalay time for 7 days in a week")
+```
+
+The delay is more severe on weekdays than on Saturdays and Sundays.
+
+## Distribution of dalay time within 24 hours
+
+```{r fig.width=9.3}
+ggplot(bus,aes(x=scheduledHour,y=timeDiff/60,colour=scheduledHour,fill = after_scale(alpha(colour, 0.4))))+
+   geom_boxplot()+
+   theme_bw()+
+   scale_colour_hue()+
+   theme(legend.position='none')+
+  labs(x='Actual-Scheduled(min)',
+     y='Scheduled Hour',fill='',title = "Distribution of dalay time within 24 hours")
+```
+
+
+The delay varies from time to time, but during commuting hours, the delay is more serious. And in the morning and evening rush hour delays can exceed ten minutes.
+
+
+
+
