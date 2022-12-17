@@ -34,7 +34,6 @@ tra<-na.omit(tra)
 
 basemap<-leaflet() %>%
      addTiles() %>% 
-     #addProviderTiles(providers$Stamen.Toner) %>%
      setView(lng = mean(sites$stop_lon,na.rm=T), lat = mean(sites$stop_lat,na.rm=T), zoom = 13)
 ##############
 
@@ -47,7 +46,6 @@ bus[,type:=fcase(timeDiff==0,'Intime',timeDiff>0,'Delay',timeDiff<0,'Advance')]
 
 basemap2<-leaflet() %>%
           addTiles() %>% 
-          #addProviderTiles(providers$Stamen.Toner) %>%
           setView(lng = mean(sites$stop_lon,na.rm=T), lat = mean(sites$stop_lat,na.rm=T), zoom = 13)
 ##############
 
